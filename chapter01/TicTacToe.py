@@ -11,332 +11,360 @@ from __future__ import print_function
 import numpy as np
 import pickle
 
-BOARD_ROWS = 3
-BOARD_COLS = 3
-BOARD_SIZE = BOARD_ROWS * BOARD_COLS
+BOARD_SIZE = 3
+# The board is represented by an array of size n^2,
+DATA_SIZE = BOARD_SIZE**2
 
-class State:
-    def __init__(self):
-        # the board is represented by a n * n array,
-        # 1 represents chessman of the player who moves first,
-        # -1 represents chessman of another player
-        # 0 represents empty position
-        self.data = np.zeros((BOARD_ROWS, BOARD_COLS))
+
+class CELL:
+    EMPTY = 0
+    X = 1
+    O = 2
+
+
+class State(object):
+    # Build list of row/column/diagonal indexers used for determing winner.
+    _rows, _cols = [], []
+    for i in range(BOARD_SIZE):
+        _rows.append(range(i * BOARD_SIZE, (i + 1) * BOARD_SIZE))
+        # For example range(1, 9, 3) == [1, 4, 5]
+        _cols.append(range(i, DATA_SIZE, BOARD_SIZE))
+    _diags = [
+        range(0, DATA_SIZE, BOARD_SIZE + 1),  # e.g. 0, 4, 8
+        range(BOARD_SIZE - 1, DATA_SIZE - 1, BOARD_SIZE - 1),  # e.g. 2, 4, 6
+    ]
+    _indexers = _rows + _cols + _diags
+
+    def __init__(self, data=np.zeros(DATA_SIZE), is_xs_turn=True):
+        self.data = data
         self.winner = None
-        self.hashVal = None
-        self.end = None
+        self._is_terminal = None
+        self.is_xs_turn = is_xs_turn
 
-    # calculate the hash value for one state, it's unique
-    def getHash(self):
-        if self.hashVal is None:
-            self.hashVal = 0
-            for i in self.data.reshape(BOARD_ROWS * BOARD_COLS):
-                if i == -1:
-                    i = 2
-                self.hashVal = self.hashVal * 3 + i
-        return int(self.hashVal)
+    def __hash__(self):
+        return hash(tuple(self.data))
 
-    # determine whether a player has won the game, or it's a tie
-    def isEnd(self):
-        if self.end is not None:
-            return self.end
-        results = []
-        # check row
-        for i in range(0, BOARD_ROWS):
-            results.append(np.sum(self.data[i, :]))
-        # check columns
-        for i in range(0, BOARD_COLS):
-            results.append(np.sum(self.data[:, i]))
+    def is_terminal(self):
+        """Whether the state is terminal."""
+        if self._is_terminal is not None:
+            return self._is_terminal
+        for indexer in State._indexers:
+            # Get values in indexer (either row/col/diag)
+            values = self.data[indexer]
+            if np.all(values == CELL.X):
+                self.winner = CELL.X
+                self._is_terminal = True
+                return True
+            if np.all(values == CELL.O):
+                self.winner = CELL.O
+                self._is_terminal = True
+                return True
 
-        # check diagonals
-        results.append(0)
-        for i in range(0, BOARD_ROWS):
-            results[-1] += self.data[i, i]
-        results.append(0)
-        for i in range(0, BOARD_ROWS):
-            results[-1] += self.data[i, BOARD_ROWS - 1 - i]
+        # Check for tie. Tie happens when there are no empty squares left and
+        # there is no winner.
+        if np.sum(self.data == CELL.EMPTY) == 0:
+            self.winner = CELL.EMPTY
+            self._is_terminal = True
+            return True
 
-        for result in results:
-            if result == 3:
-                self.winner = 1
-                self.end = True
-                return self.end
-            if result == -3:
-                self.winner = -1
-                self.end = True
-                return self.end
+        self._is_terminal = False
+        return False
 
-        # whether it's a tie
-        sum = np.sum(np.abs(self.data))
-        if sum == BOARD_ROWS * BOARD_COLS:
-            self.winner = 0
-            self.end = True
-            return self.end
+    def next_state(self, location):
+        """Returns a new state with the next player having marked `location`.
 
-        # game is still going on
-        self.end = False
-        return self.end
+        First player is assumed to be `CELL.X`.
+        """
+        assert not self.is_terminal(), 'Attempted to move at terminal state!'
+        new_state = State(np.copy(self.data), not self.is_xs_turn)
+        new_state.data[location] = CELL.X if self.is_xs_turn else CELL.O
+        return new_state
 
-    # @symbol 1 or -1
-    # put chessman symbol in position (i, j)
-    def nextState(self, i, j, symbol):
-        newState = State()
-        newState.data = np.copy(self.data)
-        newState.data[i, j] = symbol
-        return newState
+    def _get_char(self, location):
+        if self.data[location] == CELL.EMPTY:
+            return '-'
+        if self.data[location] == CELL.X:
+            return 'X'
+        if self.data[location] == CELL.O:
+            return 'O'
 
     # print the board
     def show(self):
-        for i in range(0, BOARD_ROWS):
-            print('-------------')
-            out = '| '
-            for j in range(0, BOARD_COLS):
-                if self.data[i, j] == 1:
-                    token = '*'
-                if self.data[i, j] == 0:
-                    token = '0'
-                if self.data[i, j] == -1:
-                    token = 'x'
-                out += token + ' | '
-            print(out)
-        print('-------------')
+        for i in range(BOARD_SIZE):
+            print(' -------------')
+            chars = [''] + map(self._get_char, State._rows[i]) + ['']
+            print(' | '.join(chars))
+        print(' -------------')
 
-def getAllStatesImpl(currentState, currentSymbol, allStates):
-    for i in range(0, BOARD_ROWS):
-        for j in range(0, BOARD_COLS):
-            if currentState.data[i][j] == 0:
-                newState = currentState.nextState(i, j, currentSymbol)
-                newHash = newState.getHash()
-                if newHash not in allStates.keys():
-                    isEnd = newState.isEnd()
-                    allStates[newHash] = (newState, isEnd)
-                    if not isEnd:
-                        getAllStatesImpl(newState, -currentSymbol, allStates)
 
-def getAllStates():
-    currentSymbol = 1
-    currentState = State()
-    allStates = dict()
-    allStates[currentState.getHash()] = (currentState, currentState.isEnd())
-    getAllStatesImpl(currentState, currentSymbol, allStates)
-    return allStates
+def get_all_states_impl(current_state, all_states):
+    for i in range(0, DATA_SIZE):
+        if current_state.data[i] == CELL.EMPTY:
+            new_state = current_state.next_state(i)
+            if hash(new_state) not in all_states.keys():
+                is_terminal = new_state.is_terminal()
+                all_states[hash(new_state)] = new_state
+                if not is_terminal:
+                    get_all_states_impl(new_state, all_states)
+
+
+def get_all_states():
+    curr_state = State()
+    all_states = dict()
+    all_states[hash(curr_state)] = curr_state
+    get_all_states_impl(curr_state, all_states)
+    return all_states
 
 # all possible board configurations
-allStates = getAllStates()
+all_states = get_all_states()
+
 
 class Judger:
-    # @player1: player who will move first, its chessman will be 1
-    # @player2: another player with chessman -1
-    # @feedback: if True, both players will receive rewards when game is end
+    """Runs a single game between agents until terminal state is reached.
+
+    Keyword arguments:
+    player1 -- first player. starts (X).
+    player2 -- second player. (O)
+    feedback -- whether players receive rewards at termination. (default True)
+    """
     def __init__(self, player1, player2, feedback=True):
         self.p1 = player1
         self.p2 = player2
-        self.feedback = feedback
-        self.currentPlayer = None
-        self.p1Symbol = 1
-        self.p2Symbol = -1
-        self.p1.setSymbol(self.p1Symbol)
-        self.p2.setSymbol(self.p2Symbol)
-        self.currentState = State()
-        self.allStates = allStates
+        self._feedback = feedback
+        self.p1_symbol = CELL.X
+        self.p2_symbol = CELL.O
+        self.p1.set_symbol(self.p1_symbol)
+        self.p2.set_symbol(self.p2_symbol)
+        self.current_state = State()
 
-    # give reward to two players
-    def giveReward(self):
-        if self.currentState.winner == self.p1Symbol:
-            self.p1.feedReward(1)
-            self.p2.feedReward(0)
-        elif self.currentState.winner == self.p2Symbol:
-            self.p1.feedReward(0)
-            self.p2.feedReward(1)
+    def give_reward(self):
+        if self.current_state.winner == self.p1_symbol:
+            self.p1.feed_reward(1)
+            self.p2.feed_reward(0)
+        elif self.current_state.winner == self.p2_symbol:
+            self.p1.feed_reward(0)
+            self.p2.feed_reward(1)
         else:
-            self.p1.feedReward(0)
-            self.p2.feedReward(0)
+            self.p1.feed_reward(0)
+            self.p2.feed_reward(0)
 
-    def feedCurrentState(self):
-        self.p1.feedState(self.currentState)
-        self.p2.feedState(self.currentState)
+    def feed_current_state(self):
+        self.p1.feed_state(self.current_state)
+        self.p2.feed_state(self.current_state)
 
     def reset(self):
         self.p1.reset()
         self.p2.reset()
-        self.currentState = State()
-        self.currentPlayer = None
+        self.current_state = State()
 
-    # @show: if True, print each board during the game
+    # @show: if True, print each terminal board during the game
     def play(self, show=False):
         self.reset()
-        self.feedCurrentState()
+        self.feed_current_state()
         while True:
-            # set current player
-            if self.currentPlayer == self.p1:
-                self.currentPlayer = self.p2
-            else:
-                self.currentPlayer = self.p1
+            curr_player = self.p1 if self.current_state.is_xs_turn else self.p2
             if show:
-                self.currentState.show()
-            [i, j, symbol] = self.currentPlayer.takeAction()
-            self.currentState = self.currentState.nextState(i, j, symbol)
-            hashValue = self.currentState.getHash()
-            self.currentState, isEnd = self.allStates[hashValue]
-            self.feedCurrentState()
-            if isEnd:
-                if self.feedback:
-                    self.giveReward()
-                return self.currentState.winner
+                self.current_state.show()
+            location = curr_player.take_action()
+            self.current_state = self.current_state.next_state(location)
+            self.feed_current_state()
+            if self.current_state.is_terminal():
+                if self._feedback:
+                    self.give_reward()
+                return self.current_state.winner
 
-# AI player
-class Player:
-    # @stepSize: step size to update estimations
-    # @exploreRate: possibility to explore
-    def __init__(self, stepSize = 0.1, exploreRate=0.1):
-        self.allStates = allStates
+
+class BasePlayer(object):
+    def __init__(self):
+        super(BasePlayer, self).__init__()
+        self.current_state = None
+
+    def reset(self):
+        pass
+
+    def set_symbol(self, symbol):
+        pass
+
+    def feed_state(self, state):
+        pass
+
+    def feed_reward(self, reward):
+        pass
+
+    def take_action(self):
+        raise NotImplementedError()
+
+    def save_policy(self):
+        pass
+
+    def load_policy(self):
+        pass
+
+
+# Temporal-Difference learning AI agent with reward.
+class RewardTdPlayer(BasePlayer):
+    # @step_size: step size to update estimations
+    # @explore_rate: possibility to explore (epsilon in epsilon-greedy)
+    def __init__(self, step_size=0.1, explore_rate=0.1):
+        super(RewardTdPlayer, self).__init__()
         self.estimations = dict()
-        self.stepSize = stepSize
-        self.exploreRate = exploreRate
+        self.step_size = step_size
+        self.explore_rate = explore_rate
         self.states = []
 
     def reset(self):
         self.states = []
 
-    def setSymbol(self, symbol):
+    def set_symbol(self, symbol):
         self.symbol = symbol
-        for hash in self.allStates.keys():
-            (state, isEnd) = self.allStates[hash]
-            if isEnd:
+        for state_id in all_states.keys():
+            state = all_states[state_id]
+            if state.is_terminal():
                 if state.winner == self.symbol:
-                    self.estimations[hash] = 1.0
+                    self.estimations[state_id] = 1.0
                 else:
-                    self.estimations[hash] = 0
+                    self.estimations[state_id] = 0
             else:
-                self.estimations[hash] = 0.5
+                self.estimations[state_id] = 0.5
 
     # accept a state
-    def feedState(self, state):
+    def feed_state(self, state):
         self.states.append(state)
 
     # update estimation according to reward
-    def feedReward(self, reward):
+    def feed_reward(self, reward):
         if len(self.states) == 0:
             return
-        self.states = [state.getHash() for state in self.states]
+        self.states = [hash(state) for state in self.states]
         target = reward
-        for latestState in reversed(self.states):
-            value = self.estimations[latestState] + self.stepSize * (target - self.estimations[latestState])
-            self.estimations[latestState] = value
+        for latest_state in reversed(self.states):
+            latest_est = self.estimations[latest_state]
+            value = latest_est + self.step_size * (target - latest_est)
+            self.estimations[latest_state] = value
             target = value
         self.states = []
 
     # determine next action
-    def takeAction(self):
+    def take_action(self):
         state = self.states[-1]
-        nextStates = []
-        nextPositions = []
-        for i in range(BOARD_ROWS):
-            for j in range(BOARD_COLS):
-                if state.data[i, j] == 0:
-                    nextPositions.append([i, j])
-                    nextStates.append(state.nextState(i, j, self.symbol).getHash())
-        if np.random.binomial(1, self.exploreRate):
-            np.random.shuffle(nextPositions)
+        possible_actions = np.where(state.data == CELL.EMPTY)[0]
+        possible_states = map(hash, map(state.next_state, possible_actions))
+
+        # Maybe explore
+        if np.random.binomial(1, self.explore_rate):
             # Not sure if truncating is the best way to deal with exploratory step
             # Maybe it's better to only skip this step rather than forget all the history
             self.states = []
-            action = nextPositions[0]
-            action.append(self.symbol)
+            action = np.random.choice(possible_actions)
             return action
 
         values = []
-        for hash, pos in zip(nextStates, nextPositions):
-            values.append((self.estimations[hash], pos))
-        np.random.shuffle(values)
+        for state_id, action in zip(possible_states, possible_actions):
+            values.append((self.estimations[state_id], action))
         values.sort(key=lambda x: x[0], reverse=True)
+        # print(len(values))
+        # print(values[0])
         action = values[0][1]
-        action.append(self.symbol)
         return action
 
-    def savePolicy(self):
-        fw = open('optimal_policy_' + str(self.symbol), 'wb')
-        pickle.dump(self.estimations, fw)
-        fw.close()
+    def save_policy(self):
+        with open('/tmp/optimal_policy_' + str(self.symbol), 'wb') as fw:
+            pickle.dump(self.estimations, fw)
 
-    def loadPolicy(self):
-        fr = open('optimal_policy_' + str(self.symbol),'rb')
-        self.estimations = pickle.load(fr)
-        fr.close()
+    def load_policy(self):
+        with open('/tmp/optimal_policy_' + str(self.symbol), 'rb') as fr:
+            self.estimations = pickle.load(fr)
+
 
 # human interface
 # input a number to put a chessman
 # | 1 | 2 | 3 |
 # | 4 | 5 | 6 |
 # | 7 | 8 | 9 |
-class HumanPlayer:
-    def __init__(self, stepSize = 0.1, exploreRate=0.1):
+class HumanPlayer(BasePlayer):
+    def __init__(self):
+        super(HumanPlayer, self).__init__()
         self.symbol = None
-        self.currentState = None
+        self.current_state = None
         return
-    def reset(self):
-        return
-    def setSymbol(self, symbol):
+
+    def set_symbol(self, symbol):
         self.symbol = symbol
         return
-    def feedState(self, state):
-        self.currentState = state
+
+    def feed_state(self, state):
+        self.current_state = state
         return
-    def feedReward(self, reward):
-        return
-    def takeAction(self):
-        data = int(input("Input your position:"))
-        data -= 1
-        i = data // int(BOARD_COLS)
-        j = data % BOARD_COLS
-        if self.currentState.data[i, j] != 0:
-            return self.takeAction()
-        return (i, j, self.symbol)
+
+    def take_action(self):
+        response = int(input("Input your position (1-9):"))
+        response -= 1
+        if self.current_state.data[response] != 0:
+            return self.take_action()
+        return response
+
+
+class RandomPlayer(BasePlayer):
+    def __init__(self):
+        super(RandomPlayer, self).__init__()
+        self.current_state = None
+
+    def feed_state(self, state):
+        self.current_state = state
+
+    def take_action(self):
+        possible_actions = np.where(self.current_state.data == CELL.EMPTY)[0]
+        return np.random.choice(possible_actions)
+
 
 def train(epochs=20000):
-    player1 = Player()
-    player2 = Player()
+    print('Starting training...')
+    player1 = RewardTdPlayer()
+    player2 = RewardTdPlayer()
     judger = Judger(player1, player2)
-    player1Win = 0.0
-    player2Win = 0.0
-    for i in range(0, epochs):
-        print("Epoch", i)
+    p1_wins = 0.0
+    p2_wins = 0.0
+    for i in range(1, epochs+1):
         winner = judger.play()
-        if winner == 1:
-            player1Win += 1
-        if winner == -1:
-            player2Win += 1
+        if winner == CELL.X:
+            p1_wins += 1
+        if winner == CELL.O:
+            p2_wins += 1
+        if i % 100 == 0:
+            print("Epoch %d: (%f, %f)" % (i, p1_wins / i, p2_wins / i))
         judger.reset()
-    print(player1Win / epochs)
-    print(player2Win / epochs)
-    player1.savePolicy()
-    player2.savePolicy()
+    player1.save_policy()
+    player2.save_policy()
 
-def compete(turns=500):
-    player1 = Player(exploreRate=0)
-    player2 = Player(exploreRate=0)
+
+def compete(turns=500,
+            player1=RewardTdPlayer(explore_rate=0),
+            player2=RewardTdPlayer(explore_rate=0)):
+    print('Self-play evaluation')
     judger = Judger(player1, player2, False)
-    player1.loadPolicy()
-    player2.loadPolicy()
-    player1Win = 0.0
-    player2Win = 0.0
-    for i in range(0, turns):
-        print("Epoch", i)
+    player1.load_policy()
+    player2.load_policy()
+    p1_wins = 0.0
+    p2_wins = 0.0
+    for i in range(1, turns+1):
         winner = judger.play()
-        if winner == 1:
-            player1Win += 1
-        if winner == -1:
-            player2Win += 1
+        if winner == CELL.X:
+            p1_wins += 1
+        if winner == CELL.O:
+            p2_wins += 1
+        if i % 100 == 0:
+            print("Epoch %d: (%f, %f)" % (i, p1_wins / i, p2_wins / i))
         judger.reset()
-    print(player1Win / turns)
-    print(player2Win / turns)
+    print(p1_wins / turns)
+    print(p2_wins / turns)
 
-def play():
+
+def play(agent=RewardTdPlayer(explore_rate=0)):
     while True:
-        player1 = Player(exploreRate=0)
+        player1 = agent
         player2 = HumanPlayer()
         judger = Judger(player1, player2, False)
-        player1.loadPolicy()
+        player1.load_policy()
         winner = judger.play(True)
         if winner == player2.symbol:
             print("Win!")
@@ -345,7 +373,7 @@ def play():
         else:
             print("Tie!")
 
-train()
-compete()
-play()
-
+if __name__ == '__main__':
+    train()
+    compete(player2=RandomPlayer(), player1=RewardTdPlayer(explore_rate=0))
+    # play()
