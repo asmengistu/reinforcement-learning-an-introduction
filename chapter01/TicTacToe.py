@@ -97,7 +97,7 @@ class State(object):
         print(' -------------')
 
 
-def get_all_states_impl(current_state, all_states):
+def _get_all_states_impl(current_state, all_states):
     for i in range(0, DATA_SIZE):
         if current_state.data[i] == CELL.EMPTY:
             new_state = current_state.next_state(i)
@@ -105,31 +105,31 @@ def get_all_states_impl(current_state, all_states):
                 is_terminal = new_state.is_terminal()
                 all_states[hash(new_state)] = new_state
                 if not is_terminal:
-                    get_all_states_impl(new_state, all_states)
+                    _get_all_states_impl(new_state, all_states)
 
 
-def get_all_states():
+def _get_all_states():
     curr_state = State()
     all_states = dict()
     all_states[hash(curr_state)] = curr_state
-    get_all_states_impl(curr_state, all_states)
+    _get_all_states_impl(curr_state, all_states)
     return all_states
 
 # all possible board configurations
-all_states = get_all_states()
+all_states = _get_all_states()
 
 
 class Judger:
     """Runs a single game between agents until terminal state is reached.
 
     Keyword arguments:
-    player1 -- first player. starts (X).
-    player2 -- second player. (O)
+    player_1 -- first player. starts (X).
+    player_2 -- second player. (O)
     feedback -- whether players receive rewards at termination. (default True)
     """
-    def __init__(self, player1, player2, feedback=True):
-        self.p1 = player1
-        self.p2 = player2
+    def __init__(self, player_1, player_2, feedback=True):
+        self.p1 = player_1
+        self.p2 = player_2
         self._feedback = feedback
         self.p1_symbol = CELL.X
         self.p2_symbol = CELL.O
@@ -201,35 +201,93 @@ class BasePlayer(object):
         pass
 
 
-# Temporal-Difference learning AI agent with reward.
-class RewardTdPlayer(BasePlayer):
-    # @step_size: step size to update estimations
-    # @explore_rate: possibility to explore (epsilon in epsilon-greedy)
-    def __init__(self, step_size=0.1, explore_rate=0.1):
-        super(RewardTdPlayer, self).__init__()
-        self.estimations = dict()
-        self.step_size = step_size
-        self.explore_rate = explore_rate
+class BaseTdAgent(BasePlayer):
+    def __init__(self):
+        super(BaseTdAgent, self).__init__()
+        self.V = dict()
         self.states = []
 
     def reset(self):
         self.states = []
 
+    def feed_state(self, state):
+        self.states.append(state)
+
     def set_symbol(self, symbol):
+        # Update value function based on winning/losing states.
         self.symbol = symbol
         for state_id in all_states.keys():
             state = all_states[state_id]
             if state.is_terminal():
                 if state.winner == self.symbol:
-                    self.estimations[state_id] = 1.0
+                    self.V[state_id] = 1.0
                 else:
-                    self.estimations[state_id] = 0
+                    self.V[state_id] = 0
             else:
-                self.estimations[state_id] = 0.5
+                self.V[state_id] = 0.5
 
-    # accept a state
+
+class SimpleTdAgent(BaseTdAgent):
+    """Implementation of simple value updating agent. (Chapter 1)"""
+    def __init__(self, step_size=0.1, explore_rate=0.1):
+        super(SimpleTdAgent, self).__init__()
+        self.step_size = step_size
+        self.explore_rate = explore_rate
+
+    def perform_update(self):
+        for i in range(len(self.states) - 1):
+            curr_state, next_state = self.states[i], self.states[i+1]
+            curr_state_val = self.V[hash(curr_state)]
+            next_state_val = self.V[hash(next_state)]
+            addend = self.step_size * (next_state_val - curr_state_val)
+            self.V[hash(curr_state)] += addend
+
     def feed_state(self, state):
         self.states.append(state)
+        if state.is_terminal():
+            self.perform_update()
+
+    def take_action(self):
+        state = self.states[-1]
+        possible_actions = np.where(state.data == CELL.EMPTY)[0]
+        possible_states = map(hash,
+                              map(state.next_state, possible_actions))
+
+        # Maybe explore
+        if np.random.binomial(1, self.explore_rate):
+            # Update all values up until greedy move.
+            self.perform_update()
+            self.states = []
+            return np.random.choice(possible_actions)
+
+        # Greedy
+        values = [(self.V[state_id], action) for state_id, action in
+                  zip(possible_states, possible_actions)]
+        values.sort(key=lambda x: x[0], reverse=True)
+        next_state_val, action = values[0]
+        return action
+
+    def save_policy(self):
+        with open('/tmp/simple_td_%d.p' % (self.symbol,), 'wb') as fw:
+            pickle.dump(self.V, fw)
+
+    def load_policy(self):
+        with open('/tmp/simple_td_%d.p' % (self.symbol,), 'rb') as fr:
+            self.V = pickle.load(fr)
+
+
+# Temporal-Difference learning AI agent with reward.
+class RewardTdAgent(BaseTdAgent):
+    """Agent that updates the value estimation function based on rewards.
+
+    Keyword arguments:
+    step_size -- step size to update Value estimation function V.
+    explore_rate -- possibility to explore (epsilon in epsilon-greedy)
+    """
+    def __init__(self, step_size=0.1, explore_rate=0.1):
+        super(RewardTdAgent, self).__init__()
+        self.step_size = step_size
+        self.explore_rate = explore_rate
 
     # update estimation according to reward
     def feed_reward(self, reward):
@@ -238,9 +296,9 @@ class RewardTdPlayer(BasePlayer):
         self.states = [hash(state) for state in self.states]
         target = reward
         for latest_state in reversed(self.states):
-            latest_est = self.estimations[latest_state]
+            latest_est = self.V[latest_state]
             value = latest_est + self.step_size * (target - latest_est)
-            self.estimations[latest_state] = value
+            self.V[latest_state] = value
             target = value
         self.states = []
 
@@ -260,7 +318,7 @@ class RewardTdPlayer(BasePlayer):
 
         values = []
         for state_id, action in zip(possible_states, possible_actions):
-            values.append((self.estimations[state_id], action))
+            values.append((self.V[state_id], action))
         values.sort(key=lambda x: x[0], reverse=True)
         # print(len(values))
         # print(values[0])
@@ -268,16 +326,15 @@ class RewardTdPlayer(BasePlayer):
         return action
 
     def save_policy(self):
-        with open('/tmp/optimal_policy_' + str(self.symbol), 'wb') as fw:
-            pickle.dump(self.estimations, fw)
+        with open('/tmp/reward_td_%d.p' % (self.symbol,), 'wb') as fw:
+            pickle.dump(self.V, fw)
 
     def load_policy(self):
-        with open('/tmp/optimal_policy_' + str(self.symbol), 'rb') as fr:
-            self.estimations = pickle.load(fr)
+        with open('/tmp/reward_td_%d.p' % (self.symbol,), 'rb') as fr:
+            self.V = pickle.load(fr)
 
 
-# human interface
-# input a number to put a chessman
+# Human Interface:
 # | 1 | 2 | 3 |
 # | 4 | 5 | 6 |
 # | 7 | 8 | 9 |
@@ -304,10 +361,11 @@ class HumanPlayer(BasePlayer):
         return response
 
 
-class RandomPlayer(BasePlayer):
+class RandomAgent(BasePlayer):
     def __init__(self):
-        super(RandomPlayer, self).__init__()
+        super(RandomAgent, self).__init__()
         self.current_state = None
+        self.V = dict()
 
     def feed_state(self, state):
         self.current_state = state
@@ -317,11 +375,13 @@ class RandomPlayer(BasePlayer):
         return np.random.choice(possible_actions)
 
 
-def train(epochs=20000):
+def train(epochs=20000,
+          player_1=SimpleTdAgent(),
+          player_2=SimpleTdAgent()):
     print('Starting training...')
-    player1 = RewardTdPlayer()
-    player2 = RewardTdPlayer()
-    judger = Judger(player1, player2)
+    player_1 = player_1
+    player_2 = player_2
+    judger = Judger(player_1, player_2)
     p1_wins = 0.0
     p2_wins = 0.0
     for i in range(1, epochs+1):
@@ -330,20 +390,20 @@ def train(epochs=20000):
             p1_wins += 1
         if winner == CELL.O:
             p2_wins += 1
-        if i % 100 == 0:
-            print("Epoch %d: (%f, %f)" % (i, p1_wins / i, p2_wins / i))
+        if i % 1000 == 0:
+            print("Epoch %d: (%f, %f) %s" % (i, p1_wins / i, p2_wins / i, np.sum(np.array(player_2.V.values()) == 0.5)))
         judger.reset()
-    player1.save_policy()
-    player2.save_policy()
+    player_1.save_policy()
+    player_2.save_policy()
 
 
 def compete(turns=500,
-            player1=RewardTdPlayer(explore_rate=0),
-            player2=RewardTdPlayer(explore_rate=0)):
+            player_1=RewardTdAgent(explore_rate=0),
+            player_2=RewardTdAgent(explore_rate=0)):
     print('Self-play evaluation')
-    judger = Judger(player1, player2, False)
-    player1.load_policy()
-    player2.load_policy()
+    judger = Judger(player_1, player_2, False)
+    player_1.load_policy()
+    player_2.load_policy()
     p1_wins = 0.0
     p2_wins = 0.0
     for i in range(1, turns+1):
@@ -359,21 +419,33 @@ def compete(turns=500,
     print(p2_wins / turns)
 
 
-def play(agent=RewardTdPlayer(explore_rate=0)):
+def play(agent=RewardTdAgent(explore_rate=0), human_is_first=True):
     while True:
-        player1 = agent
-        player2 = HumanPlayer()
-        judger = Judger(player1, player2, False)
-        player1.load_policy()
+        player_1 = HumanPlayer() if human_is_first else agent
+        player_2 = agent if human_is_first else HumanPlayer()
+        judger = Judger(player_1, player_2, False)
+        agent.load_policy()
         winner = judger.play(True)
-        if winner == player2.symbol:
-            print("Win!")
-        elif winner == player1.symbol:
-            print("Lose!")
+        if winner == player_1.symbol:
+            print("X Wins!")
+        elif winner == player_2.symbol:
+            print("O Wins!")
         else:
             print("Tie!")
 
 if __name__ == '__main__':
-    train()
-    compete(player2=RandomPlayer(), player1=RewardTdPlayer(explore_rate=0))
-    # play()
+    train(30000, player_1=SimpleTdAgent(), player_2=SimpleTdAgent())
+    # train(1000, player_1=RewardTdAgent(), player_2=RewardTdAgent())
+    # train(10000, player_1=RandomAgent(), player_2=SimpleTdAgent())
+    # train(20000, player_1=RandomAgent(), player_2=RewardTdAgent())
+    # print('RandomAgent vs RewardTdAgent: ')
+    # compete(player_1=RandomAgent(), player_2=RewardTdAgent(explore_rate=0))
+    # print('RandomAgent vs SimpleTdAgent: ')
+    # compete(player_1=RandomAgent(), player_2=RewardTdAgent(explore_rate=0))
+    # print('SimpleAgent vs RewardAgent: ')
+    # compete(player_1=SimpleTdAgent(explore_rate=0),
+    #         player_2=RewardTdAgent(explore_rate=0))
+    # print('RewardAgent vs SimpleAgent: ')
+    # compete(player_1=RewardTdAgent(explore_rate=0),
+    #         player_2=SimpleTdAgent(explore_rate=0))
+    play(SimpleTdAgent(), False)
